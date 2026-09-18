@@ -10,19 +10,24 @@ import (
 	"github.com/google/uuid"
 	"github.com/hizkyas/gym-app/backend/internal/middleware"
 	"github.com/hizkyas/gym-app/backend/internal/models"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
+// AuthDB defines database operations required by AuthHandler.
+type AuthDB interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // AuthHandler handles authentication routes.
 type AuthHandler struct {
-	db            *pgxpool.Pool
-	jwtSecret     string
+	db             AuthDB
+	jwtSecret      string
 	jwtExpiryHours int
 }
 
 // NewAuthHandler creates a new AuthHandler.
-func NewAuthHandler(db *pgxpool.Pool, jwtSecret string, jwtExpiryHours int) *AuthHandler {
+func NewAuthHandler(db AuthDB, jwtSecret string, jwtExpiryHours int) *AuthHandler {
 	return &AuthHandler{db: db, jwtSecret: jwtSecret, jwtExpiryHours: jwtExpiryHours}
 }
 
