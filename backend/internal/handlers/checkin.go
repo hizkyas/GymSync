@@ -3,53 +3,136 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/hizkyas/gym-app/backend/internal/models"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// CheckInHandler handles QR-code check-in requests.
-type CheckInHandler struct {
-	db *pgxpool.Pool
+// DBQuerier is the minimal DB interface required by CheckInHandler.
+// Both *pgxpool.Pool and pgxmock.PgxPoolIface satisfy this interface,
+// making the handler fully testable without a real database.
+type DBQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-// NewCheckInHandler creates a new CheckInHandler.
+// CheckInHandler handles QR-code check-in requests.
+type CheckInHandler struct {
+	db DBQuerier
+}
+
+// NewCheckInHandler creates a CheckInHandler backed by a production pgxpool.
 func NewCheckInHandler(db *pgxpool.Pool) *CheckInHandler {
 	return &CheckInHandler{db: db}
 }
 
+// newCheckInHandlerFromQuerier creates a CheckInHandler from any DBQuerier.
+// Used in tests to inject a mock.
+func newCheckInHandlerFromQuerier(q DBQuerier) *CheckInHandler {
+	return &CheckInHandler{db: q}
+}
+
 // CheckIn handles POST /api/v1/checkin
-// This is the hot path — optimized for sub-10ms response times.
+//
+// Hot path — optimised for sub-10 ms response times.
+// Strategy:
+//  1. Parse and validate the QR token UUID from the request body.
+//  2. Execute a single LATERAL JOIN query that resolves the member and their
+//     most-recent subscription status in one round-trip.
+//  3. Evaluate access: granted for `active`/`trialing`, denied otherwise.
+//  4. Persist the access log asynchronously (does NOT block the response).
+//  5. Return 200 OK (access granted) or 403 Forbidden (access denied).
 func (h *CheckInHandler) CheckIn(w http.ResponseWriter, r *http.Request) {
+	// ── 1. Parse request ────────────────────────────────────────────────────
 	var req models.CheckInRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	qrToken, err := uuid.Parse(req.QRToken)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "invalid qr_token format")
+	req.QRToken = strings.TrimSpace(req.QRToken)
+	if req.QRToken == "" {
+		respondError(w, http.StatusBadRequest, "qr_token is required")
 		return
 	}
 
+	qrToken, err := uuid.Parse(req.QRToken)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "qr_token must be a valid UUID")
+		return
+	}
+
+	// ── 2. DB lookup ─────────────────────────────────────────────────────────
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Single optimized query: lookup user + latest subscription status via index on qr_token
-	var (
-		userID        uuid.UUID
-		fullName      string
-		email         string
-		avatarURL     *string
-		isActive      bool
-		subStatus     *models.SubscriptionStatus
-	)
+	userID, fullName, email, avatarURL, isActive, subStatus, err :=
+		h.lookupMember(ctx, qrToken)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			respondError(w, http.StatusNotFound, "no member found for this QR token")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "lookup failed, please try again")
+		return
+	}
 
+	// ── 3. Account active guard ──────────────────────────────────────────────
+	if !isActive {
+		respondError(w, http.StatusForbidden, "member account is deactivated")
+		return
+	}
+
+	// ── 4. Evaluate subscription status ─────────────────────────────────────
+	accessGranted, denialReason := evaluateAccess(subStatus)
+
+	// ── 5. Persist access log (async) ────────────────────────────────────────
+	checkInID := uuid.New()
+	checkedInAt := time.Now().UTC()
+	ipStr := realClientIP(r)
+
+	go h.persistCheckIn(checkInID, userID, qrToken, accessGranted, denialReason, checkedInAt, ipStr, req.Notes)
+
+	// ── 6. Respond ───────────────────────────────────────────────────────────
+	resp := models.CheckInResponse{
+		AccessGranted: accessGranted,
+		DenialReason:  denialReason,
+		MemberName:    fullName,
+		MemberEmail:   email,
+		AvatarURL:     avatarURL,
+		CheckedInAt:   checkedInAt,
+		CheckInID:     checkInID,
+	}
+
+	statusCode := http.StatusOK
+	if !accessGranted {
+		statusCode = http.StatusForbidden
+	}
+	respondJSON(w, statusCode, resp)
+}
+
+// lookupMember performs the single optimised query: user row + lateral
+// subscription join, all resolved in one DB round-trip.
+func (h *CheckInHandler) lookupMember(
+	ctx context.Context,
+	qrToken uuid.UUID,
+) (
+	userID uuid.UUID,
+	fullName, email string,
+	avatarURL *string,
+	isActive bool,
+	subStatus *models.SubscriptionStatus,
+	err error,
+) {
 	err = h.db.QueryRow(ctx, `
 		SELECT
 			u.id,
@@ -67,75 +150,69 @@ func (h *CheckInHandler) CheckIn(w http.ResponseWriter, r *http.Request) {
 			LIMIT 1
 		) s ON true
 		WHERE u.qr_token = $1
-	`, qrToken).Scan(&userID, &fullName, &email, &avatarURL, &isActive, &subStatus)
-	if err != nil {
-		respondError(w, http.StatusNotFound, "member not found for this QR token")
-		return
-	}
-
-	if !isActive {
-		respondError(w, http.StatusForbidden, "member account is deactivated")
-		return
-	}
-
-	// Determine access
-	accessGranted := false
-	var denialReason *string
-
-	if subStatus == nil {
-		reason := "no active subscription found"
-		denialReason = &reason
-	} else {
-		switch *subStatus {
-		case models.StatusActive, models.StatusTrialing:
-			accessGranted = true
-		case models.StatusPastDue:
-			reason := "subscription payment is past due"
-			denialReason = &reason
-		case models.StatusCanceled:
-			reason := "subscription has been canceled"
-			denialReason = &reason
-		case models.StatusPaused:
-			reason := "subscription is currently paused"
-			denialReason = &reason
-		default:
-			reason := "subscription is not active"
-			denialReason = &reason
-		}
-	}
-
-	// Extract client IP
-	ipStr := realClientIP(r)
-
-	// Write access log asynchronously to avoid blocking the response
-	checkInID := uuid.New()
-	checkedInAt := time.Now().UTC()
-
-	go func() {
-		bgCtx, bgCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer bgCancel()
-		_, _ = h.db.Exec(bgCtx, `
-			INSERT INTO check_ins (id, user_id, qr_token, access_granted, denial_reason, checked_in_at, ip_address, notes)
-			VALUES ($1, $2, $3, $4, $5, $6, $7::inet, $8)
-		`, checkInID, userID, qrToken, accessGranted, denialReason, checkedInAt, ipStr, req.Notes)
-	}()
-
-	resp := models.CheckInResponse{
-		AccessGranted: accessGranted,
-		DenialReason:  denialReason,
-		MemberName:    fullName,
-		MemberEmail:   email,
-		AvatarURL:     avatarURL,
-		CheckedInAt:   checkedInAt,
-		CheckInID:     checkInID,
-	}
-
-	statusCode := http.StatusOK
-	if !accessGranted {
-		statusCode = http.StatusForbidden
-	}
-	respondJSON(w, statusCode, resp)
+	`, qrToken).Scan(
+		&userID, &fullName, &email, &avatarURL, &isActive, &subStatus,
+	)
+	return
 }
+
+// evaluateAccess determines whether a member should be granted access based
+// on their current subscription status.
+//
+// Access is GRANTED for:
+//   - active   — paid and within the billing period
+//   - trialing — within a free trial period
+//
+// Access is DENIED for all other statuses, each with a descriptive reason.
+func evaluateAccess(subStatus *models.SubscriptionStatus) (accessGranted bool, denialReason *string) {
+	if subStatus == nil {
+		reason := "no subscription found — please sign up for a membership plan"
+		return false, &reason
+	}
+
+	switch *subStatus {
+	case models.StatusActive, models.StatusTrialing:
+		return true, nil
+
+	case models.StatusPastDue:
+		reason := "subscription payment is past due — please update your payment method"
+		return false, &reason
+
+	case models.StatusCanceled:
+		reason := "subscription has been canceled — please renew to regain access"
+		return false, &reason
+
+	case models.StatusPaused:
+		reason := "subscription is currently paused — please resume your plan"
+		return false, &reason
+
+	default:
+		reason := "subscription is not in an active state"
+		return false, &reason
+	}
+}
+
+// persistCheckIn writes the access log row to check_ins.
+// Runs in a background goroutine to keep the hot path non-blocking.
+func (h *CheckInHandler) persistCheckIn(
+	checkInID, userID, qrToken uuid.UUID,
+	accessGranted bool,
+	denialReason *string,
+	checkedInAt time.Time,
+	ipStr string,
+	notes *string,
+) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	_, _ = h.db.Exec(ctx, `
+		INSERT INTO check_ins
+			(id, user_id, qr_token, access_granted, denial_reason, checked_in_at, ip_address, notes)
+		VALUES ($1, $2, $3, $4, $5, $6, $7::inet, $8)
+	`, checkInID, userID, qrToken, accessGranted, denialReason, checkedInAt, ipStr, notes)
+}
+
+// ─── Supporting endpoints ─────────────────────────────────────────────────────
 
 // RecentCheckIns handles GET /api/v1/checkins/recent (admin/trainer only)
 func (h *CheckInHandler) RecentCheckIns(w http.ResponseWriter, r *http.Request) {
@@ -197,14 +274,14 @@ func (h *CheckInHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	type stats struct {
+	type statsPayload struct {
 		ActiveMembers  int64   `json:"active_members"`
 		TotalMembers   int64   `json:"total_members"`
 		TodayCheckIns  int64   `json:"today_check_ins"`
 		MonthlyRevenue float64 `json:"monthly_revenue_cents"`
 	}
 
-	var s stats
+	var s statsPayload
 
 	_ = h.db.QueryRow(ctx, `
 		SELECT
