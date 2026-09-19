@@ -35,7 +35,7 @@ export const Login: React.FC<LoginPageProps> = ({ onLogin }) => {
         <div className="login-card__logo">
           <Dumbbell size={36} color="#8b5cf6" />
         </div>
-        <h1 className="login-card__title">GymOS</h1>
+        <h1 className="login-card__title">Gymfusion</h1>
         <p className="login-card__subtitle">Admin & Front-Desk Portal</p>
 
         <form onSubmit={handleSubmit} className="login-form">
