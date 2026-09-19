@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter, Routes, Route, NavLink, Navigate } from 'react-router-dom';
 import { Dashboard } from './pages/Dashboard';
@@ -57,12 +57,10 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
 }
 
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-
-  useEffect(() => {
-    const token = localStorage.getItem('gymfusion_token');
-    setIsAuthenticated(!!token);
-  }, []);
+  // Derive initial auth state directly from localStorage — avoids setState-in-effect lint warning
+  const [isAuthenticated, setIsAuthenticated] = useState(
+    () => !!localStorage.getItem('gymfusion_token')
+  );
 
   const handleLogin = (_token: string) => setIsAuthenticated(true);
   const handleLogout = () => {
