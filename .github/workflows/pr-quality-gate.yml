@@ -1,0 +1,108 @@
+name: CI — PR Quality Gate
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ─── Backend ────────────────────────────────────────────────────────────────
+  backend:
+    name: Backend — Build, Vet & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: backend/go.sum
+
+      - name: Download dependencies
+        working-directory: backend
+        run: go mod download
+
+      - name: Verify module consistency
+        working-directory: backend
+        run: go mod verify
+
+      - name: Build
+        working-directory: backend
+        run: go build ./...
+
+      - name: Vet
+        working-directory: backend
+        run: go vet ./...
+
+      - name: Test (race detector + coverage on tested packages)
+        working-directory: backend
+        run: |
+          go test -race -count=1 -timeout 60s \
+            -coverprofile=coverage.out \
+            ./internal/handlers/... \
+            ./internal/middleware/...
+
+      - name: Enforce coverage ≥ 55% on tested packages
+        working-directory: backend
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "Coverage: ${COVERAGE}%"
+          awk "BEGIN { exit ($COVERAGE < 55) }" || \
+            (echo "::error::Coverage ${COVERAGE}% below 55% threshold!" && exit 1)
+
+      - name: Post coverage summary
+        working-directory: backend
+        run: |
+          echo "### 🧪 Backend Coverage" >> $GITHUB_STEP_SUMMARY
+          go tool cover -func=coverage.out | tail -1 >> $GITHUB_STEP_SUMMARY
+
+  # ─── Frontend ───────────────────────────────────────────────────────────────
+  frontend:
+    name: Frontend — Lint, Typecheck & Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend-admin/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend-admin
+        run: npm ci
+
+      - name: Lint (oxlint)
+        working-directory: frontend-admin
+        run: npm run lint
+
+      - name: TypeScript type check
+        working-directory: frontend-admin
+        run: npx tsc --noEmit
+
+      - name: Production build
+        working-directory: frontend-admin
+        run: npm run build
+
+      - name: Post build summary
+        run: |
+          echo "### ⚛️ Frontend Build" >> $GITHUB_STEP_SUMMARY
+          echo "✅ TypeScript + Vite production bundle built successfully" >> $GITHUB_STEP_SUMMARY
+
+  # ─── All checks passed gate ─────────────────────────────────────────────────
+  all-checks:
+    name: All Checks Passed
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Confirm all required checks passed
+        run: |
+          if [ "${{ needs.backend.result }}" != "success" ] || \
+             [ "${{ needs.frontend.result }}" != "success" ]; then
+            echo "::error::One or more required checks failed."
+            exit 1
+          fi
+          echo "✅ All checks passed — PR is ready to merge."
