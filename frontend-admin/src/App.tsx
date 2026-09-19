@@ -19,7 +19,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
       <aside className="sidebar">
         <div className="sidebar__logo">
           <Dumbbell size={28} color="#8b5cf6" />
-          <span>GymOS</span>
+          <span>Gymfusion</span>
         </div>
         <nav className="sidebar__nav">
           <NavLink to="/dashboard" className={({ isActive }) => `sidebar__link ${isActive ? 'sidebar__link--active' : ''}`}>
@@ -60,13 +60,13 @@ export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
   useEffect(() => {
-    const token = localStorage.getItem('gym_token');
+    const token = localStorage.getItem('gymfusion_token');
     setIsAuthenticated(!!token);
   }, []);
 
   const handleLogin = (_token: string) => setIsAuthenticated(true);
   const handleLogout = () => {
-    localStorage.removeItem('gym_token');
+    localStorage.removeItem('gymfusion_token');
     setIsAuthenticated(false);
   };
 

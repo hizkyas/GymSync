@@ -15,7 +15,7 @@ export const Login: React.FC<LoginPageProps> = ({ onLogin }) => {
   const mutation = useMutation<AuthResponse, Error, { email: string; password: string }>({
     mutationFn: login,
     onSuccess: (data) => {
-      localStorage.setItem('gym_token', data.token);
+      localStorage.setItem('gymfusion_token', data.token);
       onLogin(data.token);
     },
     onError: (err: any) => {
