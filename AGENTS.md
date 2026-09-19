@@ -35,30 +35,33 @@
 - Docker Compose configuration and React admin frontend scaffold.
 
 ### Phase 1: GYM-002 — QR Check-in Engine (`commit 8a57e88`)
-- **Branch:** `feature/GYM-002-qr-checkin-engine` (Pushed to remote `origin`)
-- **Files Modified:**
-  - `backend/internal/handlers/checkin.go` — Handler implementation for `POST /api/v1/checkin`.
-  - `backend/internal/handlers/checkin_export_test.go` — White-box testing export bridge.
-  - `backend/internal/handlers/checkin_test.go` — 19 test cases (unit, mock integration, benchmarks).
-  - `backend/go.mod` & `backend/go.sum` — Added `github.com/pashagolub/pgxmock/v3`.
-- **Key Technical Implementation:**
-  - `DBQuerier` interface on `CheckInHandler` to enable mock DB testing without live Postgres.
-  - Pure function `evaluateAccess()` handling all 5 subscription states (`active`, `trialing`, `past_due`, `canceled`, `paused`, `nil`).
-  - Strict payload validation (trimmed whitespace, token present, valid UUID).
-  - Asynchronous non-blocking check-in logging (`persistCheckIn` goroutine).
-  - 19/19 tests passing (`go test ./internal/handlers/...`).
+- **Branch:** `feature/GYM-002-qr-checkin-engine` (PR #1)
+- Introduced `DBQuerier` interface on `CheckInHandler`.
+- Pure function `evaluateAccess()` handling all 5 subscription states.
+- 19 test cases passing.
+
+### Phase 2: GYM-003 — Stripe Webhook & Subscription Management (`commit 4cb1ecc` / `72c59fe`)
+- **Branch:** `feature/GYM-003-stripe-webhook-subscriptions` (PR #2)
+- Introduced `SubscriptionDB` interface.
+- Added event handlers for `invoice.payment_failed` and `invoice.payment_succeeded`.
+- 9 test cases passing.
+
+### Phase 3: GYM-004 — JWT Auth & RBAC Middleware Test Suite (`commit 9755566` / `c92152d`)
+- **Branch:** `feature/GYM-004-jwt-auth-rbac-suite`
+- Introduced `AuthDB` interface on `AuthHandler`.
+- Added 14 unit & integration test cases (`handlers/auth_test.go` and `middleware/auth_test.go`).
+
+### Phase 4: GYM-005 — React Admin Dashboard Integration (`commit a910e5d`)
+- **Branch:** `feature/GYM-005-admin-dashboard-integration` (Pushed to remote `origin`)
+- Integrated `@tanstack/react-query` `useQueryClient` cache invalidation in `QRScanner.tsx` for immediate feed & stats update.
+- Verified TypeScript build & production asset bundle generation (`npm run build`).
 
 ---
 
 ## 4. Current Repository State
 
 - `main` is up-to-date with remote `origin/main`.
-- `feature/GYM-002-qr-checkin-engine` is up-to-date with remote `origin/feature/GYM-002-qr-checkin-engine`.
-- PR URL for GYM-002: `https://github.com/hizkyas/GymSync/pull/new/feature/GYM-002-qr-checkin-engine`
-
----
-
-## 5. Next Steps & Ongoing Backlog
-
-1. Open PR for `feature/GYM-002-qr-checkin-engine` and merge into `main` after review.
-2. Next production tasks (e.g. GYM-003 Stripe Webhook sync, Membership Management API, Admin Dashboard UI integration).
+- `feature/GYM-002-qr-checkin-engine` (PR #1 open).
+- `feature/GYM-003-stripe-webhook-subscriptions` (PR #2 open).
+- `feature/GYM-004-jwt-auth-rbac-suite` pushed.
+- `feature/GYM-005-admin-dashboard-integration` pushed.
