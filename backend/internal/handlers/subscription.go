@@ -8,19 +8,24 @@ import (
 	"time"
 
 	"github.com/hizkyas/gym-app/backend/internal/models"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stripe/stripe-go/v78"
 	"github.com/stripe/stripe-go/v78/webhook"
 )
 
+// SubscriptionDB defines database operations required by SubscriptionHandler.
+type SubscriptionDB interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
 // SubscriptionHandler handles Stripe webhook events.
 type SubscriptionHandler struct {
-	db                  *pgxpool.Pool
+	db                  SubscriptionDB
 	stripeWebhookSecret string
 }
 
 // NewSubscriptionHandler creates a new SubscriptionHandler.
-func NewSubscriptionHandler(db *pgxpool.Pool, stripeWebhookSecret string) *SubscriptionHandler {
+func NewSubscriptionHandler(db SubscriptionDB, stripeWebhookSecret string) *SubscriptionHandler {
 	return &SubscriptionHandler{db: db, stripeWebhookSecret: stripeWebhookSecret}
 }
 
@@ -35,7 +40,7 @@ func (h *SubscriptionHandler) StripeWebhook(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// If webhook secret is not configured, skip signature verification (dev mode)
+	// If webhook secret is configured and not placeholder, construct and verify signature
 	var event stripe.Event
 	if h.stripeWebhookSecret != "" && h.stripeWebhookSecret != "whsec_placeholder" {
 		sigHeader := r.Header.Get("Stripe-Signature")
@@ -72,6 +77,22 @@ func (h *SubscriptionHandler) StripeWebhook(w http.ResponseWriter, r *http.Reque
 		}
 		h.cancelSubscription(ctx, w, &sub)
 
+	case "invoice.payment_failed":
+		var inv stripe.Invoice
+		if err := json.Unmarshal(event.Data.Raw, &inv); err != nil {
+			respondError(w, http.StatusBadRequest, "failed to parse invoice payment_failed event")
+			return
+		}
+		h.updateInvoiceStatus(ctx, w, &inv, models.StatusPastDue)
+
+	case "invoice.payment_succeeded":
+		var inv stripe.Invoice
+		if err := json.Unmarshal(event.Data.Raw, &inv); err != nil {
+			respondError(w, http.StatusBadRequest, "failed to parse invoice payment_succeeded event")
+			return
+		}
+		h.updateInvoiceStatus(ctx, w, &inv, models.StatusActive)
+
 	default:
 		// Acknowledge unknown events
 		w.WriteHeader(http.StatusOK)
@@ -80,7 +101,10 @@ func (h *SubscriptionHandler) StripeWebhook(w http.ResponseWriter, r *http.Reque
 
 func (h *SubscriptionHandler) upsertSubscription(ctx context.Context, w http.ResponseWriter, sub *stripe.Subscription) {
 	status := mapStripeStatus(string(sub.Status))
-	customerID := sub.Customer.ID
+	customerID := ""
+	if sub.Customer != nil {
+		customerID = sub.Customer.ID
+	}
 	subscriptionID := sub.ID
 	periodStart := time.Unix(sub.CurrentPeriodStart, 0).UTC()
 	periodEnd := time.Unix(sub.CurrentPeriodEnd, 0).UTC()
@@ -104,7 +128,10 @@ func (h *SubscriptionHandler) upsertSubscription(ctx context.Context, w http.Res
 }
 
 func (h *SubscriptionHandler) cancelSubscription(ctx context.Context, w http.ResponseWriter, sub *stripe.Subscription) {
-	customerID := sub.Customer.ID
+	customerID := ""
+	if sub.Customer != nil {
+		customerID = sub.Customer.ID
+	}
 	now := time.Now().UTC()
 
 	_, err := h.db.Exec(ctx, `
@@ -114,6 +141,29 @@ func (h *SubscriptionHandler) cancelSubscription(ctx context.Context, w http.Res
 	`, models.StatusCanceled, now, customerID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to cancel subscription")
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *SubscriptionHandler) updateInvoiceStatus(ctx context.Context, w http.ResponseWriter, inv *stripe.Invoice, status models.SubscriptionStatus) {
+	customerID := ""
+	if inv.Customer != nil {
+		customerID = inv.Customer.ID
+	}
+	if customerID == "" {
+		respondError(w, http.StatusBadRequest, "missing customer in invoice event")
+		return
+	}
+
+	_, err := h.db.Exec(ctx, `
+		UPDATE subscriptions
+		SET status = $1, updated_at = NOW()
+		WHERE stripe_customer_id = $2
+	`, status, customerID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to update subscription status from invoice event")
 		return
 	}
 
@@ -137,3 +187,4 @@ func mapStripeStatus(stripeStatus string) models.SubscriptionStatus {
 		return models.StatusCanceled
 	}
 }
+
