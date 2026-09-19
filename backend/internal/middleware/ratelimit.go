@@ -17,7 +17,7 @@ const (
 )
 
 // RateLimiter returns a Redis-backed sliding window rate limiting middleware.
-// It limits requests per IP address.
+// It limits requests per IP address to RateLimitRequests per RateLimitWindow.
 func RateLimiter(rdb *redis.Client) func(http.Handler) http.Handler {
 	return SlidingWindowLimiter(rdb, RateLimitRequests, "rate_limit", RateLimitWindow)
 }
@@ -28,9 +28,9 @@ func CheckInRateLimiter(rdb *redis.Client) func(http.Handler) http.Handler {
 	return SlidingWindowLimiter(rdb, 10, "checkin_rate", RateLimitWindow)
 }
 
-// RateLimitRedis is the interface that abstracts Redis operations used by
-// the sliding-window rate limiters. This allows unit testing without a live
-// Redis connection.
+// RateLimitRedis is the interface that abstracts Redis operations used by the
+// sliding-window rate limiters. This allows unit testing without a live Redis
+// connection — both *redis.Client and miniredis-backed clients satisfy it.
 type RateLimitRedis interface {
 	Pipeline() redis.Pipeliner
 }
@@ -48,14 +48,19 @@ func SlidingWindowLimiter(rdb RateLimitRedis, limit int64, keyPrefix string, win
 			now := time.Now()
 			windowStart := now.Add(-window)
 
+			// Use a Redis pipeline for atomicity and performance.
 			pipe := rdb.Pipeline()
+			// Remove timestamps outside the current window.
 			pipe.ZRemRangeByScore(ctx, key, "0", fmt.Sprintf("%d", windowStart.UnixMilli()))
+			// Add the current request timestamp.
 			pipe.ZAdd(ctx, key, redis.Z{Score: float64(now.UnixMilli()), Member: now.UnixNano()})
+			// Count requests remaining in the window.
 			countCmd := pipe.ZCard(ctx, key)
+			// Reset TTL so idle keys are evicted automatically.
 			pipe.Expire(ctx, key, window)
 
 			if _, err := pipe.Exec(ctx); err != nil {
-				// On Redis failure, allow the request through (fail open)
+				// On Redis failure, allow the request through (fail open).
 				next.ServeHTTP(w, r)
 				return
 			}

@@ -9,7 +9,7 @@ export const apiClient = axios.create({
 
 // Attach JWT token on every request
 apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem('gym_token');
+  const token = localStorage.getItem('gymfusion_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -21,7 +21,7 @@ apiClient.interceptors.response.use(
   (res) => res,
   (error) => {
     if (error.response?.status === 401) {
-      localStorage.removeItem('gym_token');
+      localStorage.removeItem('gymfusion_token');
       window.location.href = '/login';
     }
     return Promise.reject(error);

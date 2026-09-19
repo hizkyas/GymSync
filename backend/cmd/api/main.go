@@ -86,7 +86,7 @@ func main() {
 	// Health check (no auth)
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"status":"ok","service":"gym-api"}`)
+		fmt.Fprint(w, `{"status":"ok","service":"gymfusion-api"}`)
 	})
 
 	// Stripe webhook (Stripe signs it, no JWT needed)

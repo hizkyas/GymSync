@@ -19,7 +19,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
       <aside className="sidebar">
         <div className="sidebar__logo">
           <Dumbbell size={28} color="#8b5cf6" />
-          <span>GymOS</span>
+          <span>Gymfusion</span>
         </div>
         <nav className="sidebar__nav">
           <NavLink to="/dashboard" className={({ isActive }) => `sidebar__link ${isActive ? 'sidebar__link--active' : ''}`}>
@@ -57,10 +57,11 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
 }
 
 export default function App() {
-  // Derive initial auth state directly from localStorage — avoids setState-in-effect lint warning
-  const [isAuthenticated, setIsAuthenticated] = useState(
-    () => !!localStorage.getItem('gymfusion_token')
-  );
+  // Preserve the Gymfusion token key while keeping the initial auth check safe in browser-only contexts.
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return !!localStorage.getItem('gymfusion_token');
+  });
 
   const handleLogin = (_token: string) => setIsAuthenticated(true);
   const handleLogout = () => {

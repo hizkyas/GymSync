@@ -1,4 +1,4 @@
-# GymOS — Gym Membership Application
+# Gymfusion — Gym Membership Application
 
 A scalable, multi-tenant gym management platform built with **Go**, **PostgreSQL**, **Redis**, and a **React + Vite** admin dashboard.
 
@@ -28,7 +28,7 @@ A scalable, multi-tenant gym management platform built with **Go**, **PostgreSQL
 
 ```bash
 git clone <your-repo-url>
-cd gym-app
+cd gymfusion
 
 cp .env.example .env
 # Edit .env and fill in your JWT_SECRET and optional Stripe keys
@@ -145,7 +145,7 @@ npm run dev
 ## Project Structure
 
 ```
-gym-app/
+gymfusion/
 ├── backend/
 │   ├── cmd/api/main.go              # Server entry point
 │   ├── internal/
