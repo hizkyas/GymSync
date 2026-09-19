@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { checkIn, type CheckInResponse } from '../services/api';
 import { QrCode, CheckCircle, XCircle, Loader2 } from 'lucide-react';
 
@@ -7,12 +7,15 @@ export const QRScanner: React.FC = () => {
   const [token, setToken] = useState('');
   const [result, setResult] = useState<CheckInResponse | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const queryClient = useQueryClient();
 
   const mutation = useMutation({
     mutationFn: () => checkIn({ qr_token: token.trim() }),
     onSuccess: (data) => {
       setResult(data);
       setToken('');
+      queryClient.invalidateQueries({ queryKey: ['recent-checkins'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
       // Auto-clear result after 5 seconds
       setTimeout(() => setResult(null), 5000);
     },
@@ -26,6 +29,7 @@ export const QRScanner: React.FC = () => {
         checked_in_at: new Date().toISOString(),
         check_in_id: '',
       });
+      queryClient.invalidateQueries({ queryKey: ['recent-checkins'] });
       setTimeout(() => setResult(null), 5000);
     },
   });
