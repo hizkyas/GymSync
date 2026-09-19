@@ -57,10 +57,11 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
 }
 
 export default function App() {
-  // Derive initial auth state directly from localStorage — avoids setState-in-effect lint warning
-  const [isAuthenticated, setIsAuthenticated] = useState(
-    () => !!localStorage.getItem('gymfusion_token')
-  );
+  // Preserve the Gymfusion token key while keeping the initial auth check safe in browser-only contexts.
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return !!localStorage.getItem('gymfusion_token');
+  });
 
   const handleLogin = (_token: string) => setIsAuthenticated(true);
   const handleLogout = () => {
